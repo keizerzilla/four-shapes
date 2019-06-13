@@ -10,7 +10,6 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import PowerTransformer
 from sklearn.neighbors import NearestCentroid as DMC
-from sklearn.neural_network import MLPClassifier as MLP
 from sklearn.model_selection import train_test_split as data_split
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
@@ -27,19 +26,78 @@ classifiers = {
 	"LDA" : LDA(),
 	"QDA" : QDA(),
 	"SVM_linear" : SVM(kernel="linear"),
-	"SVM_radial" : SVM(kernel="rbf"),
-	#"MLP":MLP(hidden_layer_sizes=(200, ), activation="logistic", max_iter=1000)
+	"SVM_radial" : SVM(kernel="rbf")
 }
 
-def progress(count, total, status=''):
-	bar_len = 50
-	filled_len = int(round(bar_len * count / float(total)))
+def feature_extraction(data_file, segmentate=False):
+	dump = []
 	
-	percents = round(100.0 * count / float(total), 1)
-	bar = "=" * filled_len + "-" * (bar_len - filled_len)
+	print("Extracting Hu moments...")
 	
-	sys.stdout.write("[%s] %s%s %s\r" % (bar, percents, "%", status))
-	sys.stdout.flush()
+	for c, idx in classes.items():
+		class_folder = "data/{}/".format(c)
+		
+		for f in os.listdir(class_folder):
+			fpath = class_folder + f
+			sample = int(f.replace(".png", ""))
+			
+			img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
+			
+			if segmentate:
+				img = cv2.bilateralFilter(img, 11, 17, 17)
+				img = cv2.Canny(img, 30, 200)
+				img = cv2.bitwise_not(img)
+			
+			hu = cv2.HuMoments(cv2.moments(img))
+			
+			for i in range(0, 7):
+				hu[i] = -1 * np.sign(hu[i]) * np.log10(np.abs(hu[i]))
+			
+			hu = hu.reshape((1, 7)).tolist()[0] + [sample, idx]
+			dump.append(hu)
+		
+		print(c, "ok!")
+
+	cols = ["hu1", "hu2", "hu3", "hu4", "hu5", "hu6", "hu7", "sample", "class"]
+	
+	df = pd.DataFrame(dump, columns=cols)
+	df.to_csv(data_file, index=None)
+	df.head(20)
+	
+	print("Extraction done!")
+
+def classification(data_file, rounds=100, remove_disperse=False):
+	df = pd.read_csv(data_file)
+	df = df.drop(["sample"], axis=1)
+	
+	if remove_disperse:
+		df = df.drop(["hu5", "hu6", "hu7"], axis=1)
+	
+	X = df.drop(["class"], axis=1)
+	y = df["class"]
+	
+	ans = {key: {"score" : [], "sens" : [], "spec" : []}
+	       for key, value in classifiers.items()}
+	
+	print("Classifying...")
+	
+	for i in range(rounds):
+		X_train, X_test, y_train, y_test = data_split(X, y, test_size=0.3)
+		
+		for name, classifier in classifiers.items():
+			scaler = StandardScaler()
+			scaler.fit(X_train)
+			X_train = scaler.transform(X_train)
+			X_test = scaler.transform(X_test)
+			
+			classifier.fit(X_train, y_train)
+			score = classifier.score(X_test, y_test)
+			
+			ans[name]["score"].append(score)
+		
+	print("Classification done!")
+	
+	return ans
 
 def sumary(ans, title="Vizualizando resposta de classificacao"):
 	size = 70
@@ -63,42 +121,9 @@ def sumary(ans, title="Vizualizando resposta de classificacao"):
 	print(separator*size)
 	print()
 
-def do_normalize(X_train, X_test):
-	scaler = StandardScaler()
-	scaler.fit(X_train)
-	
-	X_train = scaler.transform(X_train)
-	X_test = scaler.transform(X_test)
-	
-	return X_train, X_test
-
-def classification(data_file, rounds=100):
-	df = pd.read_csv(data_file)
-	df = df.drop(["sample"], axis=1)
-	
-	X = df.drop(["class"], axis=1)
-	y = df["class"]
-	
-	ans = {key: {"score" : [], "sens" : [], "spec" : []}
-	       for key, value in classifiers.items()}
-	
-	for i in range(rounds):
-		X_train, X_test, y_train, y_test = data_split(X, y, test_size=0.3)
-		for name, classifier in classifiers.items():
-			X_train, X_test = do_normalize(X_train, X_test)
-			
-			classifier.fit(X_train, y_train)
-			score = classifier.score(X_test, y_test)
-			
-			ans[name]["score"].append(score)
-			
-			progress(i+1, rounds)
-	
-	return ans
-
 def data_exploration(data_file):
 	df = pd.read_csv(data_file)
-	fig, ax = plt.subplots(2, 2, sharey=True)
+	fig, ax = plt.subplots(2, 2, sharey=True, figsize=(16,8))
 	ax = ax.reshape((1, 4))[0]
 	
 	for c, idx in classes.items():
@@ -108,40 +133,17 @@ def data_exploration(data_file):
 		data.boxplot(ax=ax[idx-1])
 	
 	plt.suptitle("Dispersão dos momentos por classe")
+	plt.tight_layout()
 	plt.show()
 
-def feature_extraction(data_file):
-	dump = []
-	for c, idx in classes.items():
-		class_folder = "data/{}/".format(c)
-		
-		for f in os.listdir(class_folder):
-			fpath = class_folder + f
-			sample = int(f.replace(".png", ""))
-			
-			img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
-			_, img = cv2.threshold(img, 128, 255, cv2.THRESH_BINARY)
-			hu = cv2.HuMoments(cv2.moments(img))
-			
-			for i in range(0, 7):
-				hu[i] = -1 * np.sign(hu[i]) * np.log10(np.abs(hu[i]))
-			
-			hu = hu.reshape((1, 7)).tolist()[0] + [sample, idx]
-			dump.append(hu)
-		
-		print(c, "ok!")
-
-	cols = ["hu1", "hu2", "hu3", "hu4", "hu5", "hu6", "hu7", "sample", "class"]
-	df = pd.DataFrame(dump, columns=cols)
-	df.to_csv(data_file, index=None)
-
-	print("extraction done!")
-
 if __name__ == "__main__":
-	data_file = "hu_moments.csv"
+	data_file = "hu_moments_segmented.csv"
 	
-	#feature_extraction(data_file)
-	ans = classification(data_file)
+	feature_extraction(data_file, segmentate=True)
+	#data_exploration(data_file)
 	
-	sumary(ans)
+	#ans = classification(data_file, remove_disperse=True)
+	#sumary(ans)
+	
+	
 	
